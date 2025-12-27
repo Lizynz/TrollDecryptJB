@@ -1,3 +1,5 @@
+# Support only iPadOS 18.3.2 and below
+
 # So basically, it's a TrollDecrypt
 #### But it can help you download iOS app that require higher iOS minimum in Appstore and then decrypt it.
 
