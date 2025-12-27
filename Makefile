@@ -2,7 +2,7 @@ TARGET := iphone:clang:latest:15.0
 INSTALL_TARGET_PROCESSES = SpringBoard appstored installd TrollDecrypt
 ARCHS = arm64 arm64e
 THEOS_PACKAGE_SCHEME = rootless
-THEOS_DEVICE_IP = 192.168.1.32
+PACKAGE_VERSION = 1.3.1-2
 
 include $(THEOS)/makefiles/common.mk
 
@@ -32,4 +32,3 @@ TDDaemonKiller_INSTALL_PATH = /usr/local/bin
 include $(THEOS_MAKE_PATH)/application.mk
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/tool.mk
-

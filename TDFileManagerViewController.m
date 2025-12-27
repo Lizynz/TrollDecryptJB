@@ -88,9 +88,16 @@
     NSString *path = [docPath() stringByAppendingPathComponent:file];
     NSURL *url = [NSURL fileURLWithPath:path];
 
+    // fix: app crashing on iPads when trying to share ipa (mineek)
     UIActivityViewController *activityViewController = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
-    [self presentViewController:activityViewController animated:YES completion:nil];
+    
+    if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        activityViewController.popoverPresentationController.sourceView = tableView;
+        activityViewController.popoverPresentationController.sourceRect = [tableView rectForRowAtIndexPath:indexPath];
+        activityViewController.popoverPresentationController.permittedArrowDirections = UIPopoverArrowDirectionAny;
+    }
 
+    [self presentViewController:activityViewController animated:YES completion:nil];
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 }
 

@@ -2,34 +2,12 @@
 #import "TDDumpDecrypted.h"
 #import "LSApplicationProxy+AltList.h"
 
-static NSString *getLogPath(void) {
-    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"lldb_output.log"];
+static NSString *getDebugserverLogPath(void) {
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"debugserver.log"];
 }
 
-static BOOL waitForContentOfFileSync(NSString *filePath, NSString *content, NSTimeInterval timeout) {
-    int fd = open([filePath UTF8String], O_EVTONLY);
-    if (fd == -1) {
-        NSLog(@"[trolldecrypt] Failed to open file for monitoring: %@", filePath);
-        return NO;
-    }
-
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, fd, DISPATCH_VNODE_WRITE, queue);
-    dispatch_source_set_event_handler(source, ^{
-        NSString *fileContent = [NSString stringWithContentsOfFile:filePath encoding:NSUTF8StringEncoding error:nil];
-        if ([fileContent containsString:content]) {
-            NSLog(@"[trolldecrypt] File content matched: %@", filePath);
-            dispatch_semaphore_signal(semaphore);
-        }
-    });
-    dispatch_resume(source);
-
-    int rc = dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)));
-    dispatch_source_cancel(source);
-    close(fd);
-
-    return (rc == 0);
+static NSString *getLLDBLogPath(void) {
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"lldb.log"];
 }
 
 UIWindow *alertWindow = NULL;
@@ -38,6 +16,10 @@ UIViewController *root = NULL;
 UIAlertController *alertController = NULL;
 UIAlertController *doneController = NULL;
 UIAlertController *errorController = NULL;
+
+static pid_t global_debugserver_pid = 0;
+static pid_t global_lldb_pid = 0;
+static NSString *global_binaryName = nil;
 
 NSArray *appList(void) {
     NSMutableArray *apps = [NSMutableArray array];
@@ -100,262 +82,176 @@ NSArray *sysctl_ps(void) {
     return [array copy];
 }
 
-void decryptApp(NSDictionary *app) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        alertWindow = [[UIWindow alloc] initWithFrame: [UIScreen mainScreen].bounds];
+void cleanupDebugger(void){
+    if(global_lldb_pid > 0){
+        kill(global_lldb_pid,SIGTERM);
+        sleep(1);
+        if(kill(global_lldb_pid,0) == 0) kill(global_lldb_pid,SIGKILL);
+        global_lldb_pid = 0;
+    }
+    if(global_debugserver_pid > 0){
+        kill(global_debugserver_pid,SIGTERM);
+        sleep(1);
+        if(kill(global_debugserver_pid,0) == 0) kill(global_debugserver_pid,SIGKILL);
+        global_debugserver_pid = 0;
+    }
+    global_binaryName = nil;
+}
+
+void decryptApp(NSDictionary *app){
+    dispatch_async(dispatch_get_main_queue(),^{
+        alertWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         alertWindow.rootViewController = [UIViewController new];
         alertWindow.windowLevel = UIWindowLevelAlert + 1;
         [alertWindow makeKeyAndVisible];
-        
-        // Show a "Decrypting!" alert on the device and block the UI
-            
         kw = alertWindow;
-        if([kw respondsToSelector:@selector(topmostPresentedViewController)])
-            root = [kw performSelector:@selector(topmostPresentedViewController)];
-        else
-            root = [kw rootViewController];
+        root = kw.rootViewController;
         root.modalPresentationStyle = UIModalPresentationFullScreen;
     });
 
-    NSLog(@"[trolldecrypt] decrypt...");
-
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-
-        NSString *bundleID = app[@"bundleID"];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0),^{
         NSString *name = app[@"name"];
         NSString *version = app[@"version"];
         NSString *executable = app[@"executable"];
         NSString *binaryName = [executable lastPathComponent];
+        global_binaryName = binaryName;
 
-        NSLog(@"[trolldecrypt] bundleID: %@", bundleID);
-        NSLog(@"[trolldecrypt] name: %@", name);
-        NSLog(@"[trolldecrypt] version: %@", version);
-        NSLog(@"[trolldecrypt] executable: %@", executable);
-        NSLog(@"[trolldecrypt] binaryName: %@", binaryName);
+        cleanupDebugger();
 
-        NSLog(@"[trolldecrypt] lldb --waitfor for '%@'...", binaryName);
-        pid_t lldb_pid = attachLLDBToProcessByName([binaryName UTF8String], -1);//-1 for unknown
-        
-        if (lldb_pid <= 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                errorController = [UIAlertController alertControllerWithTitle:@"Error: lldb" message:@"Failed to start lldb. Make sure lldb is installed." preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"Ok" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                    [errorController dismissViewControllerAnimated:NO completion:nil];
-                    [kw removeFromSuperview];
-                    kw.hidden = YES;
-                }];
-                [errorController addAction:okAction];
+        NSLog(@"[trolldecrypt] Starting debugserver localhost:5678 --waitfor \"%@\"",binaryName);
+
+        NSString *escapedName = [binaryName stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+        const int port = 5678;
+        const char *debugserver_path = "/var/jb/usr/bin/debugserver-16"; // rootlessJB
+
+        char port_str[32];
+        snprintf(port_str,sizeof(port_str),"localhost:%d",port);
+
+        const char *ds_args[] = {"debugserver",port_str,"--waitfor",[escapedName UTF8String],NULL};
+
+        NSString *ds_log = getDebugserverLogPath();
+        posix_spawn_file_actions_t ds_actions;
+        posix_spawn_file_actions_init(&ds_actions);
+        posix_spawn_file_actions_addopen(&ds_actions,STDOUT_FILENO,[ds_log UTF8String],O_WRONLY | O_CREAT | O_TRUNC,0644);
+        posix_spawn_file_actions_addopen(&ds_actions,STDERR_FILENO,[ds_log UTF8String],O_WRONLY | O_CREAT | O_APPEND,0644);
+
+        int status = posix_spawn(&global_debugserver_pid,debugserver_path,&ds_actions,NULL,(char *const *)ds_args,NULL);
+        posix_spawn_file_actions_destroy(&ds_actions);
+
+        if(status != 0 || global_debugserver_pid <= 0){
+            dispatch_async(dispatch_get_main_queue(),^{
+                errorController = [UIAlertController alertControllerWithTitle:@"Error" message:@"Failed to start debugserver" preferredStyle:UIAlertControllerStyleAlert];
+                [errorController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){ [kw removeFromSuperview]; }]];
                 [root presentViewController:errorController animated:YES completion:nil];
             });
             return;
         }
-        
-        // Kill existing process if any
-        NSArray *processes;
-        NSLog(@"[trolldecrypt] kill existing process if any...");
-        processes = sysctl_ps();
-        for (NSDictionary *process in processes) {
-            NSString *proc_name = process[@"proc_name"];
-            if ([proc_name isEqualToString:binaryName]) {
-                pid_t pid = [process[@"pid"] intValue];
-                NSLog(@"[trolldecrypt] Found app PID: %d (existing)", pid);
-                kill(pid, SIGKILL);
-                break;
-            }
-        }
-        
-        NSLog(@"[trolldecrypt] launch app and lldb force pause...");
-        [[UIApplication sharedApplication] launchApplicationWithIdentifier:bundleID suspended:YES]; // Launch app in suspended state
-        waitForContentOfFileSync(getLogPath(), @"Architecture set to", 30.0); // Wait for lldb to attach
-        
-        // Get PID after lldb caught it
-        pid_t pid = -1;
-        processes = sysctl_ps();
-        for (NSDictionary *process in processes) {
-            NSString *proc_name = process[@"proc_name"];
-            if ([proc_name isEqualToString:binaryName]) {
-                pid = [process[@"pid"] intValue];
-                NSLog(@"[trolldecrypt] Found app PID: %d (paused by lldb)", pid);
-                break;
-            }
-        }
 
-        if (pid == -1) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [alertController dismissViewControllerAnimated:NO completion:nil];
-                NSLog(@"[trolldecrypt] failed to get pid for binary name: %@", binaryName);
+        NSLog(@"[trolldecrypt] debugserver started (PID: %d)",global_debugserver_pid);
+        sleep(2);
 
-                errorController = [UIAlertController alertControllerWithTitle:@"Error: -1" message:[NSString stringWithFormat:@"Failed to get PID for binary name: %@", binaryName] preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *okAction = [UIAlertAction actionWithTitle:NSLocalizedString(@"Ok", @"Ok") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                    NSLog(@"[trolldecrypt] Ok action");
-                    [errorController dismissViewControllerAnimated:NO completion:nil];
-                    [kw removeFromSuperview];
-                    kw.hidden = YES;
-                }];
+        NSString *lldb_script = [NSTemporaryDirectory() stringByAppendingPathComponent:@"lldb_connect.txt"];
+        NSString *connectCmd = [NSString stringWithFormat:@"process connect connect://localhost:%d\n",port];
+        [connectCmd writeToFile:lldb_script atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
-                [errorController addAction:okAction];
+        const char *lldb_path = "/var/jb/usr/bin/lldb"; // rootlessJB
+        const char *lldb_args[] = {"lldb","-s",[lldb_script UTF8String],NULL};
+
+        NSString *lldb_log = getLLDBLogPath();
+        posix_spawn_file_actions_t lldb_actions;
+        posix_spawn_file_actions_init(&lldb_actions);
+        posix_spawn_file_actions_addopen(&lldb_actions,STDOUT_FILENO,[lldb_log UTF8String],O_WRONLY | O_CREAT | O_TRUNC,0644);
+        posix_spawn_file_actions_addopen(&lldb_actions,STDERR_FILENO,[lldb_log UTF8String],O_WRONLY | O_CREAT | O_APPEND,0644);
+
+        status = posix_spawn(&global_lldb_pid,lldb_path,&lldb_actions,NULL,(char *const *)lldb_args,NULL);
+        posix_spawn_file_actions_destroy(&lldb_actions);
+
+        if(status != 0 || global_lldb_pid <= 0){
+            kill(global_debugserver_pid,SIGKILL);
+            global_debugserver_pid = 0;
+            dispatch_async(dispatch_get_main_queue(),^{
+                errorController = [UIAlertController alertControllerWithTitle:@"Error" message:@"Failed to connect lldb" preferredStyle:UIAlertControllerStyleAlert];
+                [errorController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){ [kw removeFromSuperview]; }]];
                 [root presentViewController:errorController animated:YES completion:nil];
             });
-
             return;
         }
 
-        NSLog(@"[trolldecrypt] pid: %d", pid);
+        NSLog(@"[trolldecrypt] lldb connected (PID: %d)",global_lldb_pid);
 
-        bfinject_rocknroll(pid, name, version, lldb_pid);
-    });
-}
-
-pid_t attachLLDBToProcessByName(const char *executableName, pid_t target_pid) {
-    NSLog(@"[trolldecrypt] Attaching lldb to executable: %s (PID: %d)", executableName, target_pid);
-
-    NSString *scriptPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"lldb_attach.txt"];
-    NSString *scriptContent = [NSString stringWithFormat:
-        @"process attach --name '%s' --waitfor\n", executableName]; // TODO: shell-escape executableName
-    [scriptContent writeToFile:scriptPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    NSString *logPath = getLogPath();
-
-    pid_t lldb_pid = 0;
-    const char *lldb_path = "/var/jb/usr/bin/lldb"; // TODO: please edit to use auto scheme for rootful/roothide, i'm lazy and forgot to do it
-    const char *args[] = {
-        "lldb",
-        "-s", [scriptPath UTF8String],  // Source script file
-        NULL
-    };
-    
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-
-    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, [logPath UTF8String], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, [logPath UTF8String], O_WRONLY | O_CREAT | O_APPEND, 0644);
-    
-    int status = posix_spawn(&lldb_pid, lldb_path, &actions, NULL, (char *const *)args, NULL);
-    posix_spawn_file_actions_destroy(&actions);
-    
-    if (status == 0) {
-        NSLog(@"[trolldecrypt] lldb spawned done, lldb PID: %d", lldb_pid);
-        NSLog(@"[trolldecrypt] lldb output: %@", logPath);
-        
-        waitForContentOfFileSync(logPath, @"process attach --name", 5.0);
-        sleep(1); // Give lldb a moment to settle
-        
-        // Verify lldb is still running
-        if (kill(lldb_pid, 0) == 0) {
-            NSLog(@"[trolldecrypt] lldb attached to '%s' (PID: %d)", executableName, target_pid);
-        } else {
-            NSLog(@"[trolldecrypt] lldb process died");
-            lldb_pid = 0;
-        }
-    } else {
-        NSLog(@"[trolldecrypt] fail to spawn lldb: %d", status);
-        lldb_pid = 0;
-    }
-    
-    return lldb_pid;
-}
-
-// Detach lldb from process
-void detachLLDB(pid_t lldb_pid) {
-    if (lldb_pid > 0) {
-        NSLog(@"[trolldecrypt] Detaching lldb (PID: %d)", lldb_pid);
-
-        kill(lldb_pid, SIGTERM);
-        
-        sleep(1);
-      
-        if (kill(lldb_pid, 0) == 0) {
-            NSLog(@"[trolldecrypt] lldb still running, sending SIGKILL");
-            kill(lldb_pid, SIGKILL);
-        }
-        
-        NSLog(@"[trolldecrypt] lldb detached successfully");
-
-        // Reap the lldb process
-        int unused;
-        waitpid(lldb_pid, &unused, WNOHANG);
-    }
-}
-
-void bfinject_rocknroll(pid_t pid, NSString *appName, NSString *version, pid_t lldb_pid) {
-    NSLog(@"[trolldecrypt] decrypt...");
-    
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{;
-        NSLog(@"[trolldecrypt] Process PID: %d, lldb PID: %d", pid, lldb_pid);
-
-		// Get full path
-		char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
-        proc_pidpath(pid, pathbuf, sizeof(pathbuf));
-		const char *fullPathStr = pathbuf;
-
-        NSLog(@"[trolldecrypt] fullPathStr: %s", fullPathStr);
-        NSLog(@"[trolldecrypt] Process is already PAUSED by lldb");
-        
-        DumpDecrypted *dd = [[DumpDecrypted alloc] initWithPathToBinary:[NSString stringWithUTF8String:fullPathStr] appName:appName appVersion:version];
-        if(!dd) {
-            NSLog(@"[trolldecrypt] ERROR: failed to get DumpDecrypted instance");
-            return;
-        }
-
-        NSLog(@"[trolldecrypt] Full path to app: %s   ///   IPA File: %@", fullPathStr, [dd IPAPath]);
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            alertWindow = [[UIWindow alloc] initWithFrame: [UIScreen mainScreen].bounds];
-            alertWindow.rootViewController = [UIViewController new];
-            alertWindow.windowLevel = UIWindowLevelAlert + 1;
-            [alertWindow makeKeyAndVisible];
-            
-            // Show a "Decrypting!" alert on the device and block the UI
-            alertController = [UIAlertController
-                alertControllerWithTitle:@"Decrypting"
-                message:@"Please wait, this will take a few seconds..."
-                preferredStyle:UIAlertControllerStyleAlert];
-                
-            kw = alertWindow;
-            if([kw respondsToSelector:@selector(topmostPresentedViewController)])
-                root = [kw performSelector:@selector(topmostPresentedViewController)];
-            else
-                root = [kw rootViewController];
-            root.modalPresentationStyle = UIModalPresentationFullScreen;
+        dispatch_async(dispatch_get_main_queue(),^{
+            alertController = [UIAlertController alertControllerWithTitle:@"Tap the app!"
+                                                                  message:[NSString stringWithFormat:@"Now manually open %@.\n\nIt will freeze immediately — this is normal.\nDecryption will start automatically.",name]
+                                                           preferredStyle:UIAlertControllerStyleAlert];
             [root presentViewController:alertController animated:YES completion:nil];
         });
-        
-        NSLog(@"[trolldecrypt] Starting decryption while process is paused...");
-        [dd createIPAFile:pid];
-        NSLog(@"[trolldecrypt] Decryption complete!");
 
-        NSLog(@"[trolldecrypt] Detaching lldb...");
-        detachLLDB(lldb_pid);
-
-        // Dismiss the alert box
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [alertController dismissViewControllerAnimated:NO completion:nil];
-
-            doneController = [UIAlertController alertControllerWithTitle:@"Decryption Complete!" message:[NSString stringWithFormat:@"IPA file saved to:\n%@\n\nThanks to lldb so we can archive this!", [dd IPAPath]] preferredStyle:UIAlertControllerStyleAlert];
-
-            UIAlertAction *okAction = [UIAlertAction actionWithTitle:NSLocalizedString(@"Ok", @"Ok") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                [kw removeFromSuperview];
-                kw.hidden = YES;
-            }];
-            [doneController addAction:okAction];
-
-            if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"filza://"]]) {
-                UIAlertAction *openAction = [UIAlertAction actionWithTitle:@"Show in Filza" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                    [kw removeFromSuperview];
-                    kw.hidden = YES;
-
-                    NSString *urlString = [NSString stringWithFormat:@"filza://view%@", [dd IPAPath]];
-                    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:urlString] options:@{} completionHandler:nil];
-                }];
-                [doneController addAction:openAction];
+        pid_t target_pid = -1;
+        int attempts = 60;
+        while(attempts-- > 0 && target_pid == -1){
+            sleep(1);
+            for(NSDictionary *proc in sysctl_ps()){
+                if([[proc[@"proc_name"] lastPathComponent] isEqualToString:binaryName]){
+                    target_pid = [proc[@"pid"] intValue];
+                    NSLog(@"[trolldecrypt] App frozen! PID: %d",target_pid);
+                    break;
+                }
             }
+        }
 
+        dispatch_async(dispatch_get_main_queue(),^{
+            [alertController dismissViewControllerAnimated:YES completion:nil];
+        });
+
+        if(target_pid == -1){
+            cleanupDebugger();
+            dispatch_async(dispatch_get_main_queue(),^{
+                errorController = [UIAlertController alertControllerWithTitle:@"Timeout" message:@"App not launched or not caught in time" preferredStyle:UIAlertControllerStyleAlert];
+                [errorController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){ [kw removeFromSuperview]; }]];
+                [root presentViewController:errorController animated:YES completion:nil];
+            });
+            return;
+        }
+
+        char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
+        proc_pidpath(target_pid,pathbuf,sizeof(pathbuf));
+        NSString *fullPath = [NSString stringWithUTF8String:pathbuf];
+
+        DumpDecrypted *dd = [[DumpDecrypted alloc] initWithPathToBinary:fullPath appName:name appVersion:version];
+        if(!dd){
+            cleanupDebugger();
+            dispatch_async(dispatch_get_main_queue(),^{
+                errorController = [UIAlertController alertControllerWithTitle:@"Error" message:@"Failed to initialize dumper" preferredStyle:UIAlertControllerStyleAlert];
+                [errorController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){ [kw removeFromSuperview]; }]];
+                [root presentViewController:errorController animated:YES completion:nil];
+            });
+            return;
+        }
+
+        dispatch_async(dispatch_get_main_queue(),^{
+            alertController = [UIAlertController alertControllerWithTitle:@"Decrypting..." message:@"Dumping decrypted binary..." preferredStyle:UIAlertControllerStyleAlert];
+            [root presentViewController:alertController animated:YES completion:nil];
+        });
+
+        [dd createIPAFile:target_pid];
+
+        cleanupDebugger();
+
+        dispatch_async(dispatch_get_main_queue(),^{
+            [alertController dismissViewControllerAnimated:YES completion:nil];
+            doneController = [UIAlertController alertControllerWithTitle:@"Success!"
+                                                                 message:[NSString stringWithFormat:@"Decrypted IPA saved:\n%@", [dd IPAPath]]
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+            [doneController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){ [kw removeFromSuperview]; }]];
+            if([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"filza://"]]){
+                [doneController addAction:[UIAlertAction actionWithTitle:@"Open in Filza" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+                    [kw removeFromSuperview];
+                    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:[NSString stringWithFormat:@"filza://view%@", [dd IPAPath]]] options:@{} completionHandler:nil];
+                }]];
+            }
             [root presentViewController:doneController animated:YES completion:nil];
-        }); // dispatch on main
-                    
-        NSLog(@"[trolldecrypt] Over and out.");
-    }); // dispatch in background
-    
-    NSLog(@"[trolldecrypt] All done.");
+        });
+    });
 }
 
 NSArray *decryptedFileList(void) {

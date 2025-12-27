@@ -28,6 +28,44 @@
     self.refreshControl = refreshControl;
 }
 
+- (void)patchMobileGestaltVersion:(NSString *)newVersion {
+    NSString *plistPath = @"/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist";
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    if (![fm fileExistsAtPath:plistPath]) {
+        NSLog(@"[TrollDecrypt] MobileGestalt plist not found at %@", plistPath);
+        return;
+    }
+
+    NSMutableDictionary *mgDict = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    if (!mgDict) mgDict = [NSMutableDictionary dictionary];
+
+    NSMutableDictionary *cacheExtra = [mgDict[@"CacheExtra"] mutableCopy];
+    if (!cacheExtra) cacheExtra = [NSMutableDictionary dictionary];
+
+    NSString *targetKey = @"qNNddlUK+B/YlooNoymwgA";
+    cacheExtra[targetKey] = newVersion;
+    mgDict[@"CacheExtra"] = cacheExtra;
+
+    BOOL saved = [mgDict writeToFile:plistPath atomically:YES];
+    NSLog(@"[TrollDecrypt] MobileGestalt plist saved: %@", saved ? @"YES" : @"NO");
+
+    if (saved) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            killall(@"cfprefsd", YES);
+            NSLog(@"[TrollDecrypt] MobileGestalt cache reset");
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"iOS Version Patched"
+                                                                               message:[NSString stringWithFormat:@"Version set to %@ for key %@", newVersion, targetKey]
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+        });
+    }
+}
+
 - (void)viewDidAppear:(bool)animated {
     [super viewDidAppear:animated];
 
@@ -142,7 +180,7 @@
         currentVersion = @"99.0.0";
     }
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Set iOS Version" 
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Set iOS Version"
         message:[NSString stringWithFormat:@"Enter the iOS version to spoof (e.g., 18.0.0).\n\nCurrent: %@", currentVersion]
         preferredStyle:UIAlertControllerStyleAlert];
     
@@ -157,22 +195,23 @@
     UIAlertAction *save = [UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         NSString *newVersion = alert.textFields.firstObject.text;
         if (newVersion && [newVersion length] > 0) {
+            
             [self.hookPrefs setObject:newVersion forKey:@"iOSVersion"];
             [self.hookPrefs synchronize];
             
-            UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"iOS Version Updated" 
+            [self patchMobileGestaltVersion:newVersion];
+            
+            UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"iOS Version Updated"
                 message:[NSString stringWithFormat:@"iOS version set to %@.\n\nClick Apply to restart daemons and activate changes.", newVersion]
                 preferredStyle:UIAlertControllerStyleAlert];
             
-            // UIAlertAction *ok = [UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil];
-            UIAlertAction *apply = [UIAlertAction actionWithTitle:@"Apply" 
-                style:UIAlertActionStyleDefault 
+            UIAlertAction *apply = [UIAlertAction actionWithTitle:@"Apply"
+                style:UIAlertActionStyleDefault
                 handler:^(UIAlertAction *action) {
                     [self applyChanges];
                 }];
             
             [successAlert addAction:apply];
-            //[successAlert addAction:ok];
             [self presentViewController:successAlert animated:YES completion:nil];
         }
     }];
