@@ -147,8 +147,8 @@ void decryptApp(NSDictionary *app) {
         NSString *ds_log = getDebugserverLogPath();
         posix_spawn_file_actions_t ds_actions;
         posix_spawn_file_actions_init(&ds_actions);
-        posix_spawn_file_actions_addopen(&ds_actions,STDOUT_FILENO,[ds_log UTF8String],O_WRONLY | O_CREAT | O_TRUNC,0644);
-        posix_spawn_file_actions_addopen(&ds_actions,STDERR_FILENO,[ds_log UTF8String],O_WRONLY | O_CREAT | O_APPEND,0644);
+        posix_spawn_file_actions_addopen(&ds_actions, STDOUT_FILENO, [ds_log UTF8String], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        posix_spawn_file_actions_addopen(&ds_actions, STDERR_FILENO, [ds_log UTF8String], O_WRONLY | O_CREAT | O_APPEND, 0644);
 
         int status = posix_spawn(&global_debugserver_pid, debugserver_path, &ds_actions, NULL, (char *const *)ds_args, NULL);
         posix_spawn_file_actions_destroy(&ds_actions);
@@ -174,8 +174,8 @@ void decryptApp(NSDictionary *app) {
         NSString *lldb_log = getLLDBLogPath();
         posix_spawn_file_actions_t lldb_actions;
         posix_spawn_file_actions_init(&lldb_actions);
-        posix_spawn_file_actions_addopen(&lldb_actions,STDOUT_FILENO,[lldb_log UTF8String],O_WRONLY | O_CREAT | O_TRUNC,0644);
-        posix_spawn_file_actions_addopen(&lldb_actions,STDERR_FILENO,[lldb_log UTF8String],O_WRONLY | O_CREAT | O_APPEND,0644);
+        posix_spawn_file_actions_addopen(&lldb_actions, STDOUT_FILENO, [lldb_log UTF8String], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        posix_spawn_file_actions_addopen(&lldb_actions, STDERR_FILENO, [lldb_log UTF8String], O_WRONLY | O_CREAT | O_APPEND, 0644);
 
         status = posix_spawn(&global_lldb_pid, lldb_path, &lldb_actions, NULL, (char *const *)lldb_args, NULL);
         posix_spawn_file_actions_destroy(&lldb_actions);
@@ -189,28 +189,53 @@ void decryptApp(NSDictionary *app) {
             showOverlayAlert(alert);
             return;
         }
-        
-        UIAlertController *tapAlert = [UIAlertController alertControllerWithTitle:@"Tap the app!"
-                                                                          message:[NSString stringWithFormat:@"Open %@ now.\n\nIt will freeze — this is normal.\nDecryption will start automatically.", name]
+
+        UIAlertController *tapAlert = [UIAlertController alertControllerWithTitle:@"Preparing…"
+                                                                          message:[NSString stringWithFormat:@"Connecting to %@...\n\nWait 10 seconds for everything to stabilize.\n\nDO NOT open the app yet!", name]
                                                                    preferredStyle:UIAlertControllerStyleAlert];
         showOverlayAlert(tapAlert);
+
+        NSMutableSet<NSString *> *existingPIDs = [NSMutableSet set];
+        NSArray *currentProcesses = sysctl_ps();
+        for (NSDictionary *proc in currentProcesses) {
+            NSString *procName = [proc[@"proc_name"] lastPathComponent];
+            if ([procName isEqualToString:binaryName]) {
+                [existingPIDs addObject:proc[@"pid"]];
+            }
+        }
+
+        sleep(10);
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            tapAlert.title = @"Now open the app!";
+            tapAlert.message = [NSString stringWithFormat:@"Open %@ now.\n\nIt will freeze — this is normal.\nDecryption will start automatically.", name];
+        });
 
         pid_t target_pid = -1;
         for (int i = 0; i < 60 && target_pid == -1; i++) {
             sleep(1);
-            for (NSDictionary *proc in sysctl_ps()) {
+
+            NSArray *processes = sysctl_ps();
+            for (NSDictionary *proc in processes) {
                 NSString *procName = [proc[@"proc_name"] lastPathComponent];
                 if ([procName isEqualToString:binaryName]) {
-                    target_pid = [proc[@"pid"] intValue];
-                    break;
+                    NSString *currentPIDStr = proc[@"pid"];
+                    if (![existingPIDs containsObject:currentPIDStr]) {
+                        target_pid = [currentPIDStr intValue];
+                        break;
+                    }
                 }
             }
         }
 
+        dispatch_async(dispatch_get_main_queue(), ^{
+            hideOverlayWindow();
+        });
+
         if (target_pid <= 0) {
             cleanupDebugger();
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Timeout"
-                                                                           message:@"App not launched in time"
+                                                                           message:@"App not launched in time.\nTry again."
                                                                     preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { hideOverlayWindow(); }]];
             showOverlayAlert(alert);
