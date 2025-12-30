@@ -43,6 +43,24 @@ static void hideOverlayWindow(void) {
     });
 }
 
+static void launchApp(NSString *bundleID) {
+    Class LSApplicationWorkspace = objc_getClass("LSApplicationWorkspace");
+    id workspace = ((id (*)(id, SEL))objc_msgSend)(
+        LSApplicationWorkspace,
+        sel_registerName("defaultWorkspace")
+    );
+
+    ((BOOL (*)(id, SEL, id))objc_msgSend)(
+        workspace,
+        sel_registerName("openApplicationWithBundleID:"),
+        bundleID
+    );
+}
+
+static void returnToDecryptor(void) {
+    launchApp(@"com.trolldecrypt.jailbreak");
+}
+
 NSArray *appList(void) {
     NSMutableArray *apps = [NSMutableArray array];
 
@@ -119,23 +137,23 @@ void cleanupDebugger(void) {
 
 void decryptApp(NSDictionary *app) {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-
+        
         NSString *name       = app[@"name"];
         NSString *version    = app[@"version"];
         NSString *executable = app[@"executable"];
         NSString *binaryName = executable.lastPathComponent;
         global_binaryName = binaryName;
-
+        
         cleanupDebugger();
-
+        
         NSLog(@"[trolldecrypt] Starting debugserver for %@", binaryName);
-
-        const int port = 5678;
+        
+        const int port = 5678; // debugserver port, you can change it if needed
         const char *debugserver_path = "/var/jb/usr/bin/debugserver-16"; // rootlessJB
-
+        
         char port_str[32];
         snprintf(port_str, sizeof(port_str), "localhost:%d", port);
-
+        
         const char *ds_args[] = {
             "debugserver",
             port_str,
@@ -143,16 +161,16 @@ void decryptApp(NSDictionary *app) {
             binaryName.UTF8String,
             NULL
         };
-
+        
         NSString *ds_log = getDebugserverLogPath();
         posix_spawn_file_actions_t ds_actions;
         posix_spawn_file_actions_init(&ds_actions);
         posix_spawn_file_actions_addopen(&ds_actions, STDOUT_FILENO, [ds_log UTF8String], O_WRONLY | O_CREAT | O_TRUNC, 0644);
         posix_spawn_file_actions_addopen(&ds_actions, STDERR_FILENO, [ds_log UTF8String], O_WRONLY | O_CREAT | O_APPEND, 0644);
-
+        
         int status = posix_spawn(&global_debugserver_pid, debugserver_path, &ds_actions, NULL, (char *const *)ds_args, NULL);
         posix_spawn_file_actions_destroy(&ds_actions);
-
+        
         if (status != 0 || global_debugserver_pid <= 0) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Error"
                                                                            message:@"Failed to start debugserver"
@@ -161,25 +179,25 @@ void decryptApp(NSDictionary *app) {
             showOverlayAlert(alert);
             return;
         }
-
+        
         usleep(500 * 1000);
-
+        
         NSString *lldb_script = [NSTemporaryDirectory() stringByAppendingPathComponent:@"lldb.txt"];
         NSString *script = [NSString stringWithFormat:@"process connect connect://localhost:%d\n", port];
         [script writeToFile:lldb_script atomically:YES encoding:NSUTF8StringEncoding error:nil];
-
+        
         const char *lldb_path = "/var/jb/usr/bin/lldb"; // rootlessJB
         const char *lldb_args[] = {"lldb", "-s", lldb_script.UTF8String, NULL};
-
+        
         NSString *lldb_log = getLLDBLogPath();
         posix_spawn_file_actions_t lldb_actions;
         posix_spawn_file_actions_init(&lldb_actions);
         posix_spawn_file_actions_addopen(&lldb_actions, STDOUT_FILENO, [lldb_log UTF8String], O_WRONLY | O_CREAT | O_TRUNC, 0644);
         posix_spawn_file_actions_addopen(&lldb_actions, STDERR_FILENO, [lldb_log UTF8String], O_WRONLY | O_CREAT | O_APPEND, 0644);
-
+        
         status = posix_spawn(&global_lldb_pid, lldb_path, &lldb_actions, NULL, (char *const *)lldb_args, NULL);
         posix_spawn_file_actions_destroy(&lldb_actions);
-
+        
         if (status != 0 || global_lldb_pid <= 0) {
             cleanupDebugger();
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Error"
@@ -189,12 +207,12 @@ void decryptApp(NSDictionary *app) {
             showOverlayAlert(alert);
             return;
         }
-
-        UIAlertController *tapAlert = [UIAlertController alertControllerWithTitle:@"Preparing…"
-                                                                          message:[NSString stringWithFormat:@"Connecting to %@...\n\nWait 10 seconds for everything to stabilize.\n\nDO NOT open the app yet!", name]
+        
+        UIAlertController *tapAlert = [UIAlertController alertControllerWithTitle:@"Preparing"
+                                                                          message:[NSString stringWithFormat:@"Connecting to %@", name]
                                                                    preferredStyle:UIAlertControllerStyleAlert];
         showOverlayAlert(tapAlert);
-
+        
         NSMutableSet<NSString *> *existingPIDs = [NSMutableSet set];
         NSArray *currentProcesses = sysctl_ps();
         for (NSDictionary *proc in currentProcesses) {
@@ -203,18 +221,19 @@ void decryptApp(NSDictionary *app) {
                 [existingPIDs addObject:proc[@"pid"]];
             }
         }
-
+        
         sleep(10);
-
+        
+        NSString *bundleID = app[@"bundleID"];
+        
         dispatch_async(dispatch_get_main_queue(), ^{
-            tapAlert.title = @"Now open the app!";
-            tapAlert.message = [NSString stringWithFormat:@"Open %@ now.\n\nIt will freeze — this is normal.\nDecryption will start automatically.", name];
+            launchApp(bundleID);
         });
-
+        
         pid_t target_pid = -1;
         for (int i = 0; i < 60 && target_pid == -1; i++) {
             sleep(1);
-
+            
             NSArray *processes = sysctl_ps();
             for (NSDictionary *proc in processes) {
                 NSString *procName = [proc[@"proc_name"] lastPathComponent];
@@ -227,11 +246,11 @@ void decryptApp(NSDictionary *app) {
                 }
             }
         }
-
+        
         dispatch_async(dispatch_get_main_queue(), ^{
             hideOverlayWindow();
         });
-
+        
         if (target_pid <= 0) {
             cleanupDebugger();
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Timeout"
@@ -241,11 +260,11 @@ void decryptApp(NSDictionary *app) {
             showOverlayAlert(alert);
             return;
         }
-
+        
         char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
         proc_pidpath(target_pid, pathbuf, sizeof(pathbuf));
         NSString *fullPath = [NSString stringWithUTF8String:pathbuf];
-
+        
         DumpDecrypted *dd = [[DumpDecrypted alloc] initWithPathToBinary:fullPath appName:name appVersion:version];
         if (!dd) {
             cleanupDebugger();
@@ -256,29 +275,28 @@ void decryptApp(NSDictionary *app) {
             showOverlayAlert(alert);
             return;
         }
-
-        UIAlertController *progressAlert = [UIAlertController alertControllerWithTitle:@"Decrypting…"
-                                                                               message:@"Dumping decrypted binary..."
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-        showOverlayAlert(progressAlert);
-
+                
         [dd createIPAFile:target_pid];
-
+        
         kill(target_pid, SIGCONT);
         cleanupDebugger();
-
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            returnToDecryptor();
+        });
+        
         UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"Success!"
                                                                               message:[NSString stringWithFormat:@"Saved:\n%@", dd.IPAPath]
                                                                        preferredStyle:UIAlertControllerStyleAlert];
         [successAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { hideOverlayWindow(); }]];
-
+        
         if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"filza://"]]) {
             [successAlert addAction:[UIAlertAction actionWithTitle:@"Open in Filza" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
                 hideOverlayWindow();
                 [[UIApplication sharedApplication] openURL:[NSURL URLWithString:[NSString stringWithFormat:@"filza://view%@", dd.IPAPath]] options:@{} completionHandler:nil];
             }]];
         }
-
+        
         showOverlayAlert(successAlert);
     });
 }

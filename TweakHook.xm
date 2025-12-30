@@ -59,7 +59,7 @@ static BOOL updatesEnabled = NO;
 %end
 
 %ctor {
-
+    
     // Use our preference file path
     [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @(0644)} ofItemAtPath:ROOT_PATH_NS(@"/var/mobile/Library/Preferences/com.trolldecrypt.hook.plist") error:nil];
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:ROOT_PATH_NS(@"/var/mobile/Library/Preferences/com.trolldecrypt.hook.plist")];
@@ -78,10 +78,9 @@ static BOOL updatesEnabled = NO;
     
     // Get updates enabled flag (default: NO)
     updatesEnabled = [[prefs objectForKey:@"updatesEnabled"] boolValue];
-
+    
     NSLog(@"[TrollDecrypt] Hook enabled - iOS version: %@, updatesEnabled: %d", iosVersion, updatesEnabled);
-
-        %init(appstoredHooks);
-        %init(installdHooks);
+    
+    %init(appstoredHooks);
+    %init(installdHooks);
 }
-
