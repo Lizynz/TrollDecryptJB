@@ -10,7 +10,6 @@
 #include <spawn.h>
 #include <signal.h>
 
-#import <objc/message.h>
 #import <sys/sysctl.h>
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>

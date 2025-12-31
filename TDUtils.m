@@ -43,24 +43,6 @@ static void hideOverlayWindow(void) {
     });
 }
 
-static void launchApp(NSString *bundleID) {
-    Class LSApplicationWorkspace = objc_getClass("LSApplicationWorkspace");
-    id workspace = ((id (*)(id, SEL))objc_msgSend)(
-        LSApplicationWorkspace,
-        sel_registerName("defaultWorkspace")
-    );
-
-    ((BOOL (*)(id, SEL, id))objc_msgSend)(
-        workspace,
-        sel_registerName("openApplicationWithBundleID:"),
-        bundleID
-    );
-}
-
-static void returnToDecryptor(void) {
-    launchApp(@"com.trolldecrypt.jailbreak");
-}
-
 NSArray *appList(void) {
     NSMutableArray *apps = [NSMutableArray array];
 
@@ -227,7 +209,7 @@ void decryptApp(NSDictionary *app) {
         NSString *bundleID = app[@"bundleID"];
         
         dispatch_async(dispatch_get_main_queue(), ^{
-            launchApp(bundleID);
+            [[UIApplication sharedApplication] launchApplicationWithIdentifier:bundleID suspended:YES]; // Launch app in suspended state
         });
         
         pid_t target_pid = -1;
@@ -275,15 +257,16 @@ void decryptApp(NSDictionary *app) {
             showOverlayAlert(alert);
             return;
         }
-                
+        
+        UIAlertController *progressAlert = [UIAlertController alertControllerWithTitle:@"Decrypting"
+                                                                               message:@"Dumping decrypted binary..."
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+        showOverlayAlert(progressAlert);
+        
         [dd createIPAFile:target_pid];
         
         kill(target_pid, SIGCONT);
         cleanupDebugger();
-        
-        dispatch_async(dispatch_get_main_queue(), ^{
-            returnToDecryptor();
-        });
         
         UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"Success!"
                                                                               message:[NSString stringWithFormat:@"Saved:\n%@", dd.IPAPath]
