@@ -4,7 +4,7 @@
 #import "TSUtil.h"
 
 int main(int argc, char *argv[], char *envp[]) {
-	@autoreleasepool {
+    @autoreleasepool {
         if (getuid() == 501) {
             if (argc > 1 && strcmp(argv[1], "--child") == 0) {
                 exit(1);
@@ -17,5 +17,5 @@ int main(int argc, char *argv[], char *envp[]) {
         killall(@"installd", YES);
         killall(@"AppStore", YES);
         exit(0);
-	}
+    }
 }
