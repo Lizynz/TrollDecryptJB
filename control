@@ -1,8 +1,9 @@
 Package: com.fiore.trolldecrypt
 Name: TrollDecrypt
-Version: 1.2.1
+Version: 1.2.2
 Architecture: iphoneos-arm
-Description: Decrypt iOS apps with TrollStore
+Description: Decrypt Appstore App that require higher iOS
 Maintainer: fiore
 Author: fiore
 Section: Applications
+Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0), lldb

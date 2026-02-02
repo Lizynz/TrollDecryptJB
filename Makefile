@@ -2,7 +2,7 @@ TARGET = iphone:clang:15.0
 INSTALL_TARGET_PROCESSES = SpringBoard appstored installd TrollDecrypt
 THEOS_PACKAGE_SCHEME = rootless
 
-PACKAGE_VERSION = 1.3.1-3
+PACKAGE_VERSION = 1.3.1-4
 
 include $(THEOS)/makefiles/common.mk
 SUBPROJECTS += deps/SSZipArchive
