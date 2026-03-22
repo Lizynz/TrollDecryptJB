@@ -177,11 +177,33 @@ TDDecryptionTaskOptions TDDecryptionTaskDefaultOptions(void) {
             success = [self decryptImageAtPath:imagePath forPID:targetPID];
             if (!success) goto fail;
 
+            NSString *originalAppPath = self->_applicationProxy.bundleURL.path;
+            NSString *frameworksPath = [originalAppPath stringByAppendingPathComponent:@"Frameworks"];
+            NSError *fsError = nil;
+            NSArray *frameworkContents = [self->_fileManager contentsOfDirectoryAtPath:frameworksPath error:&fsError];
+            if (!fsError && frameworkContents.count > 0) {
+                NSInteger frameworkCount = 0;
+                for (NSString *item in frameworkContents) {
+                    if ([item hasSuffix:@".framework"]) frameworkCount++;
+                }
+                NSInteger currentFrameworkIndex = 0;
+                for (NSString *item in frameworkContents) {
+                    if ([item hasSuffix:@".framework"]) {
+                        currentFrameworkIndex++;
+                        NSString *frameworkName = [item stringByDeletingPathExtension];
+                        NSString *frameworkBinaryPath = [[frameworksPath stringByAppendingPathComponent:item] stringByAppendingPathComponent:frameworkName];
+                        if ([self->_fileManager fileExistsAtPath:frameworkBinaryPath]) {
+                            progress([NSString stringWithFormat:@"Decrypting framework %ld/%ld: %@...", (long)currentFrameworkIndex, (long)frameworkCount, frameworkName]);
+                            [self decryptImageAtPath:frameworkBinaryPath forPID:targetPID];
+                        }
+                    }
+                }
+            }
+
             NSInteger i = 0;
             for (LSPlugInKitProxy *ext in self->_applicationProxy.plugInKitPlugins) {
                 i++;
-                progress([NSString stringWithFormat:@"Decrypting extension %ld/%lu…", (long)i, (unsigned long)self->_applicationProxy.plugInKitPlugins.count]);
-
+                progress([NSString stringWithFormat:@"Decrypting extension %ld/%lu...", (long)i, (unsigned long)self->_applicationProxy.plugInKitPlugins.count]);
                 LaunchdResponse_t r = [ext td_launchProcess];
                 if (r.pid > 0) {
                     [self decryptImageAtPath:[ext td_canonicalExecutablePath] forPID:r.pid];
