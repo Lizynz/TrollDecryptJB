@@ -1,18 +1,19 @@
-# Support only iPadOS 18.3.2 and below
-
-# So basically, it's a TrollDecrypt
+# Support iPadOS 18.7.7 and below!
+#### Testing has shown that it also works on newer firmware versions, but it is recommended to use iPadOS 18.3.2 or below.
+***
+## So basically, it's a TrollDecrypt
 #### But it can help you download iOS app that require higher iOS minimum in Appstore and then decrypt it.
+***
+<details>
+<summary><strong>How did the decrypt work?</strong></summary>
 
-# Did it actually work?
-##### Bascially yes, at some point. On the source code I publish, sometimes it works, sometimes don't, I'll explain the method details. If you want to contribute to it then the PR is on top of the page! You're welcome!
+So on a random day, [DuyTran](https://github.com/khanhduytran0) told me that he saw a reddit post that someone said an online telegram bot can decrypt iOS that require minimum is iOS 26, I also remember myself i used to install higher iOS app on my iPhone with [appstoretroller](https://github.com/verygenericname/appstoretroller) (thanks to Mineek and Nathan) to install app.
 
-# How did the decrypt 'works'?
-##### So on a random day, [DuyTran](https://github.com/khanhduytran0) told me that he saw a reddit post that someone said an online telegram bot can decrypt iOS that require minimum is iOS 26, I also remember myself i used to install higher iOS app on my iPhone with [appstoretroller](https://github.com/verygenericname/appstoretroller) (thanks to Mineek and Nathan) to install app.
+The author of the post seems not sharing the method but luckily DuyTran found it out. He started `lldb` and attach `--waitfor` it, run until right before the app loaded fully FairPlay (`LC_ENCRYPTION_INFO`/`LC_ENCRYPTION_INFO64`) and hit `abort()`. From that we can decrypt the app without need it fully running/loaded, just make sure the app is loaded at least 0x4000 pages right after run and then decrypt the FairPlay and it's done.
 
-##### The author of the post seems not sharing the method but luckily DuyTran found it out. He started lldb and attach --waitfor it, run until right before the app loaded fully FairPlay (LC_ENCRYPTION_INFO/LC_ENCRYPTION_INFO64) and hit `abort()`. From that we can decrypt the app without need it fully running/loaded, just make sure the app is loaded at least 0x4000 pages right after run and then decrypt the FairPlay and it's done.
+</details>
 
-# So how it's going?
-##### Thanks to 82flex, it seems to be working on iOS 15-16 based on lldb.
+***
 
 # Credits
 - [fiore](https://github.com/donato-fiore) for [TrollDecrpyt](https://github.com/donato-fiore/TrollDecrypt)
