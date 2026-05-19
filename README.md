@@ -1,6 +1,5 @@
-# Support iPadOS 18.7.7 and below!
-#### Testing has shown that it also works on newer firmware versions, but it is recommended to use iPadOS 18.3.2 or below.
-***
+# Support iPadOS 18.3.2 and below!
+
 ## So basically, it's a TrollDecrypt
 #### But it can help you download iOS app that require higher iOS minimum in Appstore and then decrypt it.
 ***
